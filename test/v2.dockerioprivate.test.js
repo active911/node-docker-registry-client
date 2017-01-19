@@ -65,6 +65,7 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
             name: CONFIG.repo,
             username: CONFIG.username,
             password: CONFIG.password,
+            maxSchemaVersion: 2,
             log: log
         });
         t.ok(client);
@@ -111,6 +112,7 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
     tt.test('  noAuthClient: setup', function (t) {
         noAuthClient = drc.createClientV2({
             name: CONFIG.repo,
+            maxSchemaVersion: 2,
             log: log
         });
         t.ok(noAuthClient);
@@ -143,33 +145,41 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
 
     /*
      *  {
-     *      "name": <name>,
-     *      "tag": <tag>,
-     *      "fsLayers": [
-     *         {
-     *            "blobSum": <tarsum>
-     *         },
-     *         ...
-     *      ],
-     *      "history": <v1 images>,
-     *      "signature": <JWS>
+     *      "schemaVersion": 2,
+     *      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+     *      "config": {
+     *          "mediaType": "application/vnd.docker.container.image.v1+json",
+     *          "size": 1584,
+     *          "digest": "sha256:99e59f495ffaa2...545ab2bbe3b1b1ec3bd0b2"
+     *      },
+     *      "layers": [
+     *          {
+     *              "mediaType": "application/vnd.docker...diff.tar.gzip",
+     *              "size": 32,
+     *              "digest": "sha256:a3ed95caeb02ff...d00e8a7c22955b46d4"
+     *          }
+     *      ]
      *  }
      */
+    var blobDigest;
     var manifest;
     var manifestDigest;
+    var manifestStr;
     tt.test('  getManifest', function (t) {
-        client.getManifest({ref: CONFIG.tag}, function (err, manifest_, res) {
+        client.getManifest({ref: CONFIG.tag},
+                function (err, manifest_, res, manifestStr_) {
             t.ifErr(err);
             manifest = manifest_;
             manifestDigest = res.headers['docker-content-digest'];
+            manifestStr = manifestStr_;
             t.ok(manifest);
-            t.equal(manifest.schemaVersion, 1);
-            t.equal(manifest.name, repo.remoteName);
-            t.equal(manifest.tag, CONFIG.tag);
-            t.ok(manifest.architecture);
-            t.ok(manifest.fsLayers);
-            t.ok(manifest.history[0].v1Compatibility);
-            t.ok(manifest.signatures[0].signature);
+            t.equal(manifest.schemaVersion, 2);
+            t.ok(manifest.config);
+            t.ok(manifest.config.digest);
+            t.ok(manifest.layers);
+            t.ok(manifest.layers[0]);
+            t.ok(manifest.layers[0].digest);
+            blobDigest = manifest.layers[0].digest;
             t.end();
         });
     });
@@ -178,11 +188,11 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
         client.getManifest({ref: manifestDigest}, function (err, manifest_) {
             t.ifErr(err);
             t.ok(manifest);
-            ['schemaVersion',
-             'name',
-             'tag',
-             'architecture'].forEach(function (k) {
-                t.equal(manifest_[k], manifest[k], k);
+            ['config',
+             'layers',
+             'mediaType',
+             'schemaVersion'].forEach(function (k) {
+                t.deepEqual(manifest_[k], manifest[k], k);
             });
             t.end();
         });
@@ -198,8 +208,7 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
     });
 
     tt.test('  headBlob', function (t) {
-        var digest = manifest.fsLayers[0].blobSum;
-        client.headBlob({digest: digest}, function (err, ress) {
+        client.headBlob({digest: blobDigest}, function (err, ress) {
             t.ifErr(err, 'no headBlob err');
             t.ok(ress, 'got a "ress"');
             t.ok(Array.isArray(ress), '"ress" is an array');
@@ -207,7 +216,7 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
             t.ok(first.statusCode === 200 || first.statusCode === 307,
                 'first response statusCode is 200 or 307');
             if (first.headers['docker-content-digest']) {
-                t.equal(first.headers['docker-content-digest'], digest,
+                t.equal(first.headers['docker-content-digest'], blobDigest,
                     '"docker-content-digest" header from first response is '
                     + 'the queried digest');
             }
@@ -240,8 +249,7 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
     });
 
     tt.test('  createBlobReadStream', function (t) {
-        var digest = manifest.fsLayers[0].blobSum;
-        client.createBlobReadStream({digest: digest},
+        client.createBlobReadStream({digest: blobDigest},
                 function (err, stream, ress) {
             t.ifErr(err, 'createBlobReadStream err');
 
@@ -251,7 +259,7 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
             t.ok(first.statusCode === 200 || first.statusCode === 307,
                 'createBlobReadStream first res statusCode is 200 or 307');
             if (first.headers['docker-content-digest']) {
-                t.equal(first.headers['docker-content-digest'], digest,
+                t.equal(first.headers['docker-content-digest'], blobDigest,
                     '"docker-content-digest" header from first response is '
                     + 'the queried digest');
             }
@@ -267,13 +275,13 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
 
 
             var numBytes = 0;
-            var hash = crypto.createHash(digest.split(':')[0]);
+            var hash = crypto.createHash(blobDigest.split(':')[0]);
             stream.on('data', function (chunk) {
                 hash.update(chunk);
                 numBytes += chunk.length;
             });
             stream.on('end', function () {
-                t.equal(hash.digest('hex'), digest.split(':')[1]);
+                t.equal(hash.digest('hex'), blobDigest.split(':')[1]);
                 t.equal(numBytes, Number(stream.headers['content-length']));
                 t.end();
             });
@@ -292,6 +300,40 @@ test('v2 docker.io private repo (' + CONFIG.repo + ')', function (tt) {
             t.equal(res.statusCode, 404);
             t.equal(res.headers['docker-distribution-api-version'],
                 'registry/2.0');
+            t.end();
+        });
+    });
+
+    tt.test('  blobUpload', function (t) {
+        client.createBlobReadStream({digest: blobDigest},
+                function (err, stream, ress) {
+            t.ifErr(err, 'createBlobReadStream err');
+
+            var last = ress[ress.length - 1];
+            var uploadOpts = {
+                contentLength: parseInt(last.headers['content-length'], 10),
+                digest: blobDigest,
+                stream: stream
+            };
+            client.blobUpload(uploadOpts, function _uploadCb(uploadErr, res) {
+                t.ifErr(uploadErr, 'check blobUpload err');
+                t.equal(res.headers['docker-content-digest'], blobDigest,
+                    'Response header digest should match blob digest');
+                t.end();
+            });
+        });
+    });
+
+    tt.test('  putManifest', function (t) {
+        var uploadOpts = {
+            contentLength: manifestStr.length,
+            manifest: manifestStr,
+            ref: 'test_put_manifest'
+        };
+        client.putManifest(uploadOpts, function _uploadCb(uploadErr, res) {
+            t.ifErr(uploadErr, 'check blobUpload err');
+            t.equal(res.headers['docker-content-digest'], manifestDigest,
+                'Response header digest should match manifest digest');
             t.end();
         });
     });
