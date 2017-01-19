@@ -48,6 +48,7 @@ test('v2 amazonecr', function (tt) {
     tt.test('  createClient', function (t) {
         noauthClient = drc.createClientV2({
             name: CONFIG.repo,
+            maxSchemaVersion: 2,
             log: log
         });
         t.ok(noauthClient);
@@ -84,7 +85,7 @@ test('v2 amazonecr', function (tt) {
         noauthClient.listTags(function (err) {
             t.ok(err);
             t.equal(err.statusCode, 401, 'Expect a 401 status code');
-            t.equal(String(err.message).trim(), 'Not Authorizied');
+            t.equal(String(err.message).trim(), 'Not Authorized');
             t.end();
         });
     });
@@ -97,6 +98,7 @@ test('v2 amazonecr', function (tt) {
             name: CONFIG.repo,
             username: CONFIG.username,
             password: CONFIG.password,
+            maxSchemaVersion: 2,
             log: log
         });
         t.ok(client);
@@ -136,12 +138,16 @@ test('v2 amazonecr', function (tt) {
      *      "signature": <JWS>
      *  }
      */
+    var blobDigest;
     var manifest;
     var manifestDigest;
+    var manifestStr;
     tt.test('  getManifest', function (t) {
-        client.getManifest({ref: CONFIG.tag}, function (err, manifest_, res) {
+        client.getManifest({ref: CONFIG.tag},
+                function (err, manifest_, res, manifestStr_) {
             t.ifErr(err);
             manifest = manifest_;
+            manifestStr = manifestStr_;
             // Note that Amazon ECR does not return a docker-content-digest
             // header.
             manifestDigest = res.headers['docker-content-digest'];
@@ -154,6 +160,7 @@ test('v2 amazonecr', function (tt) {
             t.ok(manifest.fsLayers);
             t.ok(manifest.history[0].v1Compatibility);
             t.ok(manifest.signatures[0].signature);
+            blobDigest = manifest.fsLayers[0].blobSum;
             t.end();
         });
     });
@@ -194,14 +201,10 @@ test('v2 amazonecr', function (tt) {
             var last = ress[ress.length - 1];
             t.ok(last);
             t.equal(last.statusCode, 200);
-
-            // Content-Type:
-            // - docker.io gives 'application/octet-stream', but amazon isn't so
-            //   nice for a HEAD request, it just returns text/plain.
             t.equal(last.headers['content-type'],
-                'text/plain; charset=utf-8');
-
+                'application/vnd.docker.container.image.v1+json');
             t.ok(last.headers['content-length']);
+
             t.end();
         });
     });
@@ -257,8 +260,7 @@ test('v2 amazonecr', function (tt) {
 
             t.ok(stream);
             t.equal(stream.statusCode, 200);
-            t.equal(stream.headers['content-type'],
-                'application/octet-stream');
+            t.equal(stream.headers['content-type'], 'application/x-gzip');
             t.ok(stream.headers['content-length']);
 
             var numBytes = 0;
@@ -296,6 +298,41 @@ test('v2 amazonecr', function (tt) {
             t.equal(res.headers['docker-distribution-api-version'],
                 ECR_REGISTRY_VERSION);
 
+            t.end();
+        });
+    });
+
+    tt.test('  blobUpload', function (t) {
+        client.createBlobReadStream({digest: blobDigest},
+                function (err, stream, ress) {
+            t.ifErr(err, 'createBlobReadStream err');
+
+            var last = ress[ress.length - 1];
+            var uploadOpts = {
+                contentLength: parseInt(last.headers['content-length'], 10),
+                digest: blobDigest,
+                stream: stream
+            };
+            client.blobUpload(uploadOpts, function _uploadCb(uploadErr, res) {
+                t.ifErr(uploadErr, 'check blobUpload err');
+                t.equal(res.headers['docker-content-digest'], blobDigest,
+                    'Response header digest should match blob digest');
+                t.end();
+            });
+        });
+    });
+
+    tt.test('  putManifest', function (t) {
+        var uploadOpts = {
+            contentLength: manifestStr.length,
+            manifest: manifestStr,
+            ref: 'test_put_manifest'
+        };
+        client.putManifest(uploadOpts, function _uploadCb(uploadErr, res) {
+            t.ifErr(uploadErr, 'check blobUpload err');
+            //t.equal(res.headers['docker-content-digest'], manifestDigest,
+            //    'Response header digest should match manifest digest');
+            console.log('res.headers: ', res.headers);
             t.end();
         });
     });
