@@ -4,6 +4,10 @@
 
 (nothing yet)
 
+## 3.3.0
+
+- DOCKER-524 Implement docker push. Adds uploadBlob and putManifest API methods.
+
 ## 3.2.7
 
 - joyent/node-docker-registry-client#16 Allow a repo name to have a '/', e.g.
