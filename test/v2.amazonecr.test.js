@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright (c) 2016, Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 var assert = require('assert-plus');
@@ -126,21 +126,24 @@ test('v2 amazonecr', function (tt) {
 
     /*
      *  {
-     *      "name": <name>,
-     *      "tag": <tag>,
-     *      "fsLayers": [
-     *         {
-     *            "blobSum": <tarsum>
-     *         },
-     *         ...
-     *      ],
-     *      "history": <v1 images>,
-     *      "signature": <JWS>
+     *      "schemaVersion": 2,
+     *      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+     *      "config": {
+     *          "mediaType": "application/vnd.docker.container.image.v1+json",
+     *          "size": 1584,
+     *          "digest": "sha256:99e59f495ffaa2...545ab2bbe3b1b1ec3bd0b2"
+     *      },
+     *      "layers": [
+     *          {
+     *              "mediaType": "application/vnd.docker...diff.tar.gzip",
+     *              "size": 32,
+     *              "digest": "sha256:a3ed95caeb02ff...d00e8a7c22955b46d4"
+     *          }
+     *      ]
      *  }
      */
     var blobDigest;
     var manifest;
-    var manifestDigest;
     var manifestStr;
     tt.test('  getManifest', function (t) {
         client.getManifest({ref: CONFIG.tag},
@@ -150,17 +153,16 @@ test('v2 amazonecr', function (tt) {
             manifestStr = manifestStr_;
             // Note that Amazon ECR does not return a docker-content-digest
             // header.
-            manifestDigest = res.headers['docker-content-digest'];
+            var manifestDigest = res.headers['docker-content-digest'];
             t.equal(manifestDigest, undefined, 'no docker-content-digest');
             t.ok(manifest);
-            t.equal(manifest.schemaVersion, 1);
-            t.equal(manifest.name, repo.remoteName);
-            t.equal(manifest.tag, CONFIG.tag);
-            t.ok(manifest.architecture);
-            t.ok(manifest.fsLayers);
-            t.ok(manifest.history[0].v1Compatibility);
-            t.ok(manifest.signatures[0].signature);
-            blobDigest = manifest.fsLayers[0].blobSum;
+            t.equal(manifest.schemaVersion, 2);
+            t.ok(manifest.config);
+            t.ok(manifest.config.digest);
+            t.ok(manifest.layers);
+            t.ok(manifest.layers[0]);
+            t.ok(manifest.layers[0].digest);
+            blobDigest = manifest.layers[0].digest;
             t.end();
         });
     });
@@ -175,7 +177,7 @@ test('v2 amazonecr', function (tt) {
     });
 
     tt.test('  headBlob', function (t) {
-        var digest = manifest.fsLayers[0].blobSum;
+        var digest = manifest.layers[0].digest;
         client.headBlob({digest: digest}, function (err, ress) {
             t.ifErr(err);
             t.ok(ress);
@@ -202,7 +204,7 @@ test('v2 amazonecr', function (tt) {
             t.ok(last);
             t.equal(last.statusCode, 200);
             t.equal(last.headers['content-type'],
-                'application/vnd.docker.container.image.v1+json');
+                'application/vnd.docker.image.rootfs.diff.tar.gzip');
             t.ok(last.headers['content-length']);
 
             t.end();
@@ -233,7 +235,7 @@ test('v2 amazonecr', function (tt) {
     });
 
     tt.test('  createBlobReadStream', function (t) {
-        var digest = manifest.fsLayers[0].blobSum;
+        var digest = manifest.layers[0].digest;
         client.createBlobReadStream({digest: digest},
                 function (err, stream, ress) {
             t.ifErr(err);
@@ -260,7 +262,7 @@ test('v2 amazonecr', function (tt) {
 
             t.ok(stream);
             t.equal(stream.statusCode, 200);
-            t.equal(stream.headers['content-type'], 'application/x-gzip');
+            t.equal(stream.headers['content-type'], 'application/octet-stream');
             t.ok(stream.headers['content-length']);
 
             var numBytes = 0;
@@ -328,10 +330,15 @@ test('v2 amazonecr', function (tt) {
             manifest: manifestStr,
             ref: 'test_put_manifest'
         };
+        // Calculate the existing manifest digest.
+        var manifestDigest = 'sha256:' + crypto.createHash('sha256')
+            .update(manifestStr, 'binary')
+            .digest('hex');
+
         client.putManifest(uploadOpts, function _uploadCb(uploadErr, res) {
             t.ifErr(uploadErr, 'check blobUpload err');
-            //t.equal(res.headers['docker-content-digest'], manifestDigest,
-            //    'Response header digest should match manifest digest');
+            t.equal(res.headers['docker-content-digest'], manifestDigest,
+                'Response header digest should match manifest digest');
             t.end();
         });
     });
