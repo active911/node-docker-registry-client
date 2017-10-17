@@ -24,8 +24,17 @@ var repos = fs.readFileSync(repos_file).toString().split("\n")
 
 var config = JSON.parse(fs.readFileSync(config_file).toString())
 
-cron.schedule(config.cron_schedule, function(){
+var cleanTask = cron.schedule(config.cron_schedule, function(){
 	console.log('Running the cleanup script')
 	let cleaner = new Cleaner(config)
 	cleaner.cleanRepos(repos)
+});
+
+
+//catches ctrl+c event
+process.on('SIGINT', ()=>{
+
+	console.log('SIGINT seen.  Calling stop on  the cleanup script.')
+	cleanTask.stop()
+	console.log('Cron stopped.  Should exit after current run completes.')
 });

@@ -17,6 +17,10 @@ module.exports = function(config){
 			// with the registry. This isn't suggested for production usage.
 			level: self.config.logging
 		});
+		if(local_repos.length < 1){
+			log.info("Cleaning run complete")
+			return
+		}
 		let repo = local_repos.shift()
 		let REPO = self.config.host + ":" + self.config.port + "/" + repo
 		log.info("Cleaning " + REPO)
@@ -45,25 +49,29 @@ module.exports = function(config){
 				let deletions = []
 				let tags = data.tags
 				let counter = 0;
-				if(tags.length > 5){
+				if(tags == null){
+					log.warn({repo:REPO}, "No tags for the repo.  Skipping")
+				}
+				else if(tags.length > 5){
 					log.debug("Looking at " + tags.length + " tags")
 					data.tags.forEach((tag, index)=>{
 						client.getManifest({"ref":tag}, (err, data, res, manifestStr)=>{
 
 							if(data){
 								let v1Record = JSON.parse(data.history[0].v1Compatibility)
-								let digest = res.headers['docker-content-digest']
+								//We don't use this digest because the client seems to be giving back v1 digests
+								//let digest = res.headers['docker-content-digest']
 								if(['develop','master','release', 'latest'].indexOf(tag) < 0 && new Date(v1Record.created) < cutoff){
 									log.debug({repo:REPO}, "DELETING " + tag)
 									deletions.push(tag)
 								}
 								else{
 									log.debug({repo:REPO},"KEEPING " + tag)
-									keepers.push(digest)
+									keepers.push(tag)
 								}
 							}
 							else{
-								log.info({repo:REPO},"Empty manifest for " + tag)
+								log.debug({repo:REPO},"Empty manifest for " + tag)
 							}
 							if(counter++ == tags.length-1){
 								fulfill({"k":keepers, "d":deletions})
@@ -77,7 +85,7 @@ module.exports = function(config){
 				}
 			})
 
-			deleter.then((results)=>{
+			deleter.then(async (results)=>{
 					log.info({repo:REPO},"Keeping: " + results.k.length)
 					log.info({repo:REPO},"Deleting: " + results.d.length)
 					if(results.k.length < 1){
@@ -88,6 +96,21 @@ module.exports = function(config){
 						let clientHeaders = client._headers
 						clientHeaders.accept = "application/vnd.docker.distribution.manifest.v2+json"
 
+						//Compile a list of the keeper digests to make sure we don't delete any of them
+						//Sometimes, master/develop/release/latest can be an old image, which is also tagged by a commit hash
+
+						let keeperDigests = []
+
+						for(let j=0;j<results.k.length;j++){
+							let tag = results.k[j]
+							let tagPath = "/v2/" + repo + "/manifests/" + tag
+
+							log.debug({repo:REPO},"Getting keeper digest for " + tagPath)
+							keeperDigests.push(await self.getDigest(tagPath, clientHeaders))
+						}
+						
+						log.info({repo:REPO},"Keeper Digests: " + keeperDigests)
+
 						let promises = []
 						for(let j=0;j<results.d.length;j++){
 							promises.push(new Promise((fulfill, reject)=>{
@@ -95,32 +118,36 @@ module.exports = function(config){
 								
 								let tagPath = "/v2/" + repo + "/manifests/" + tag
 		
-								log.debug({repo:REPO},"Getting digest for " + path)
-								self.getDigest(tagPath,clientHeaders, self.config)
+								log.debug({repo:REPO},"Getting deletion digest for " + tagPath)
+								self.getDigest(tagPath,clientHeaders)
 									.then((digest)=>{
-				
-										log.info({repo:REPO},"Deleting " + digest)
-										let deletePath = "/v2/" + repo + "/manifests/" + digest
-										var request = https.request({
-											host: self.config.host,
-											port: self.config.port,
-											path: deletePath,
-											method: 'DELETE',
-											headers: clientHeaders
-										},(res) => {
-											/*log.info("Cleaner",'statusCode:', res.statusCode);
-											log.info("Cleaner",'headers:', res.headers);
-											res.on('data', (d) => {
-												process.stdout.write(d);
-											});*/
+										if(keeperDigests.indexOf(digest) > -1){
+											log.info({repo:REPO},tagPath + " has the same digest as a keeper.  Skipping Deletion.")
 											fulfill(tag)
-										});
-						
-										request.on('error', (e) => {
-											reject(e)
-										});
-										request.end();
-						
+										}
+										else{
+											log.info({repo:REPO},"Deleting " + digest)
+											let deletePath = "/v2/" + repo + "/manifests/" + digest
+											var request = https.request({
+												host: self.config.host,
+												port: self.config.port,
+												path: deletePath,
+												method: 'DELETE',
+												headers: clientHeaders
+											},(res) => {
+												/*log.info("Cleaner",'statusCode:', res.statusCode);
+												log.info("Cleaner",'headers:', res.headers);
+												res.on('data', (d) => {
+													process.stdout.write(d);
+												});*/
+												fulfill(tag)
+											});
+							
+											request.on('error', (e) => {
+												reject(e)
+											});
+											request.end();
+										}
 									})
 				
 							}))
@@ -129,13 +156,9 @@ module.exports = function(config){
 					}
 			})
 			.then(()=>{
-				if(local_repos.length>0){
 					self.cleanRepos(local_repos, self.config)
-				}
 			},()=>{
-				if(local_repos.length>0){
 					self.cleanRepos(local_repos, self.config)
-				}
 			})
 			
 		})
