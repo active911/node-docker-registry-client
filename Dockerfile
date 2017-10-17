@@ -6,4 +6,6 @@ WORKDIR "/app"
 
 RUN npm install
 
-ENTRYPOINT ["node", "cleaner.js"]
+RUN npm install node-cron
+
+ENTRYPOINT ["node", "main.js"]

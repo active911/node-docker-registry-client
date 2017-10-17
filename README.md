@@ -1,3 +1,15 @@
+# Docker Registry Cleaner
+
+This is a fork of the Joyent node-docker-registry-client
+
+We would have just used the npm pacakage, but currently (10-16-17) the scope for the oauth tokens generated for the client only has "pull".  We need "*" scope to delete tags.  That is the only change made to the registry client, the rest is implemented in cleaner.js
+
+We do a sloppy job of basically hijacking the registry client's OAuth token to perform our own DELETE request.
+
+We do try to use the registry client for the read operations.
+
+Eventually, we want to put the functionality of DELETE into the client, but that requires a bit more learning of the client's design patterns.
+
 # node-docker-registry-client
 
 A Docker Registry API client for node.js.
