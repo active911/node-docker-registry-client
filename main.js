@@ -17,16 +17,12 @@ if(!config_file){
 	process.exit(1)
 }
 
-
-
-var repos = fs.readFileSync(repos_file).toString().split("\n")
-
-
 var config = JSON.parse(fs.readFileSync(config_file).toString())
 
 var cleanTask = cron.schedule(config.cron_schedule, function(){
 	console.log('Running the cleanup script')
 	let cleaner = new Cleaner(config)
+	var repos = fs.readFileSync(repos_file).toString().split("\n")
 	cleaner.cleanRepos(repos)
 });
 
